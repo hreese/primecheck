@@ -8,12 +8,14 @@ import subprocess
 import re
 import fileinput
 import configparser
+import json
+import atexit
 
 class NoPrimeError(Exception):
-	def __init__(self, value):
-		self.value = value
-	def __str__(self):
-		return repr(self.value)
+	pass
+
+import logging
+logging.basicConfig(format='%(asctime)s %(levelname)s:%(message)s', level=logging.INFO)
 
 # scan single host
 def scan_host_dhprime(server, port = 443, openssltrace = os.path.dirname(sys.argv[0])+"/openssl-trace"):
@@ -27,7 +29,7 @@ def scan_host_dhprime(server, port = 443, openssltrace = os.path.dirname(sys.arg
 		if 'dh_p' in line:
 			return gmpy2.mpz(re.sub(".*: ", "", line), 16)
 	
-	throw 
+	raise NoPrimeError
 
 # return prime classification function
 def return_known_prime_checker(filename = os.path.dirname(sys.argv[0])+'/knownprimes.ini'):
@@ -38,7 +40,7 @@ def return_known_prime_checker(filename = os.path.dirname(sys.argv[0])+'/knownpr
 	def check_prime(prime):
 		result = {
 			'length': prime.bit_length(),
-			'prime' : prime,
+			'prime' : "0x" + prime.digits(16),
 			'is_known_prime': False,
 			'known_prime_name': None
 		}
@@ -64,6 +66,13 @@ def return_known_prime_checker(filename = os.path.dirname(sys.argv[0])+'/knownpr
 
 prime_classify = return_known_prime_checker()
 
+results = {}
+
+def print_results(r = results):
+	print(json.dumps(results), file=sys.stdout)
+
+atexit.register(print_results)
+
 # iterate over all input lines and check hosts if found
 for line in fileinput.input():
 	# skip comments
@@ -75,8 +84,23 @@ for line in fileinput.input():
 	if len(hpc) < 1:
 		continue
 	comment = '' if len(hpc) < 3 else hpc[2]
-	port = 443 if len(hpc) < 2 else hpc[1]
+	port = '443' if len(hpc) < 2 else hpc[1]
 	host = hpc[0]
+	hostport = ':'.join((host,port))
 
-	prime = scan_host_dhprime(host, port)
+	logging.info("Scanned %s", hostport)
+	results[hostport] = {'error': False}
+	try:
+		prime = scan_host_dhprime(host, port)
+	except NoPrimeError as e:
+		results[hostport] = {'error': True, 'errormsg': e}
+		logging.warning("Skipping line, unable to extract prime from %s[%d]: %s",
+				  fileinput.filename(), fileinput.filelineno(), e)
+		continue
+	except subprocess.CalledProcessError as e:
+		results[hostport] = {'error': True}
+		logging.warning("Skipping line, error calling openssl on %s[%d]: %s",
+				  fileinput.filename(), fileinput.filelineno(), e)
+		continue
 	prime_attrs = prime_classify(prime)
+	results[hostport] = prime_attrs
