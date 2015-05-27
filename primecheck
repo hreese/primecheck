@@ -1,58 +1,82 @@
 #!/usr/bin/python3
 
-import gmpy2, optparse, sys, os, subprocess, re, configparser
+import gmpy2
+import optparse
+import sys
+import os
+import subprocess
+import re
+import fileinput
+import configparser
 
-parser = optparse.OptionParser()
+class NoPrimeError(Exception):
+	def __init__(self, value):
+		self.value = value
+	def __str__(self):
+		return repr(self.value)
 
-parser.add_option("-n", "--prime", dest="prime")
-parser.add_option("-s", "--server", dest="server")
-parser.add_option("-p", "--port", dest="port", default=443, help="port (default 443/https)")
-(opts, args) = parser.parse_args()
-
-if opts.prime:
-	prime = gmpy2.mpz(opts.prime, 16)
-elif opts.server:
-	ossl_out = subprocess.check_output([os.path.dirname(sys.argv[0])+"/openssl-trace",
+# scan single host
+def scan_host_dhprime(server, port = 443, openssltrace = os.path.dirname(sys.argv[0])+"/openssl-trace"):
+	ossl_out = subprocess.check_output([openssltrace,
 		"s_client", "-trace",
-		"-servername", opts.server,
+		"-servername", server,
 		"-cipher", "DHE",
-		"-connect", opts.server+":"+str(opts.port)],
+		"-connect", server+":"+str(port)],
 		stdin=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 	for line in ossl_out.decode("utf-8").splitlines():
 		if 'dh_p' in line:
-			prime = gmpy2.mpz(re.sub(".*: ", "", line), 16)
-else:
-	parser.print_help()
-	sys.exit(1)
+			return gmpy2.mpz(re.sub(".*: ", "", line), 16)
+	
+	throw 
 
-print("checking prime p = %s" % hex(prime))
+# return prime classification function
+def return_known_prime_checker(filename = os.path.dirname(sys.argv[0])+'/knownprimes.ini'):
+	# read list of known primes
+	config = configparser.ConfigParser()
+	config.read(filename)
 
-bits = prime.bit_length()
+	def check_prime(prime):
+		result = {
+			'length': prime.bit_length(),
+			'prime' : prime,
+			'is_known_prime': False,
+			'known_prime_name': None
+		}
+		for sect in config.sections():
+			if config.get(sect, 'prime') == hex(prime):
+				result['is_known_prime'] = True
+				result['known_prime_name'] = sect
 
-# check for known primes
+		if gmpy2.is_prime(prime):
+			result['is_prime'] = True
+		else:
+			result['is_prime'] = False
 
-config = configparser.ConfigParser()
-config.read(os.path.dirname(sys.argv[0])+'/knownprimes.ini')
+		p12 = gmpy2.div(gmpy2.sub(prime, 1), 2)
+		if gmpy2.is_prime(p12):
+			result['safe_prime'] = True
+		else:
+			result['safe_prime'] = False
 
-for sect in config.sections():
-	if config.get(sect, 'prime') == hex(prime):
-		print("This is known prime %s" % sect)
+		return result
 
-if bits < 1024:
-	print("\033[91m%i bits, that's very short and insecure, use 2048 bit or more\033[39m" % bits)
-elif bits < 2048:
-	print("\033[93m%i bits, better use 2048 bit or more\033[39m" % bits)
-else:
-	print("\033[92m%i bits, that should be long enough\033[39m" % bits)
+	return check_prime
 
-if gmpy2.is_prime(prime):
-	print("\033[92mp is prime\033[39m")
-else:
-	print("\033[91mnoprimep is not a prime, that is broken\033[39m")
+prime_classify = return_known_prime_checker()
 
-p12 = gmpy2.div(gmpy2.sub(prime, 1), 2)
+# iterate over all input lines and check hosts if found
+for line in fileinput.input():
+	# skip comments
+	if line.strip().startswith('#'):
+		continue
 
-if gmpy2.is_prime(p12):
-	print("\033[92m(p-1)/2 is a Sophie Germain Prime, p is a safe prime\033[39m")
-else:
-	print("\033[93m(p-1)/2 is not a prime, therefore p is no safe prime\033[39m")
+	hpc = line.split(None, 2)
+	# skip empty lines
+	if len(hpc) < 1:
+		continue
+	comment = '' if len(hpc) < 3 else hpc[2]
+	port = 443 if len(hpc) < 2 else hpc[1]
+	host = hpc[0]
+
+	prime = scan_host_dhprime(host, port)
+	prime_attrs = prime_classify(prime)
