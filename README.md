@@ -9,14 +9,10 @@ It currently does two things:
 usage
 =====
 
-To check the prime of an https server:
-  `./primecheck -s [hostname]`
+Send hostnames plus (optionally port) on stdin, one per line. Get JSON output
+to stdout:
 
-To check a TLS connection on another port:
-  `./primecheck -s [hostname] -p [port]`
-
-To check a prime manually:
-  `./primecheck -n 0x7`
+echo "www.foo.com\nwww.bar.net:8080" | ./primecheck
 
 notes on openssl usage
 ======================
